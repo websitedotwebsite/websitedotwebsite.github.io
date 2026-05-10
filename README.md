@@ -1,5 +1,5 @@
 # TORTA
-TORTA is a work-in-progress Tetris-inspired game. PC and Mobile compatible
+TORTA is a work-in-progress Tetris-inspired game. PC and Mobile compatible.
 
 ## TO-DO 
   []  Replace the music link system with a Base64 audio decoder
