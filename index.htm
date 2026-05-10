@@ -313,54 +313,92 @@
 
 <script>
 // ── Constants ────────────────────────────────────────────────────────────────
-const MUSIC_URL = "https://www.dropbox.com/scl/fi/3ve2mkiosh0ddjbxk5dsa/Original-Tetris-theme-Tetris-Soundtrack.mp3?rlkey=t7l4zdco8rtn6qtwx75gk49gf&st=z77f37e0&?dl=1";
+// Use a more standard direct-link audio source that handles CORS/GitHub Pages better
+const MUSIC_URL = "https://ia800504.us.archive.org/33/items/TetrisThemeMusic/Tetris.mp3";
 const COLS = 10, ROWS = 20, BLOCK_SIZE = 30;
-const DAS_DELAY   = 167;   // ms before auto-repeat kicks in
-const ARR_INTERVAL = 33;   // ms between auto-repeat ticks
-const FLASH_DURATION = 140; // ms for line-clear flash
+const DAS_DELAY   = 167;   
+const ARR_INTERVAL = 33;   
+const FLASH_DURATION = 140; 
 
 const COLORS = [null,'#00FFFF','#0000FF','#FFA500','#FFFF00','#00FF00','#800080','#FF0000'];
 
 const SHAPES = [
     [],
-    [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]], // I
-    [[2,0,0],[2,2,2],[0,0,0]],                  // J
-    [[0,0,3],[3,3,3],[0,0,0]],                  // L
-    [[4,4],[4,4]],                              // O
-    [[0,5,5],[5,5,0],[0,0,0]],                  // S
-    [[0,6,0],[6,6,6],[0,0,0]],                  // T
-    [[7,7,0],[0,7,7],[0,0,0]]                   // Z
+    [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]], 
+    [[2,0,0],[2,2,2],[0,0,0]],                  
+    [[0,0,3],[3,3,3],[0,0,0]],                  
+    [[4,4],[4,4]],                              
+    [[0,5,5],[5,5,0],[0,0,0]],                  
+    [[0,6,0],[6,6,6],[0,0,0]],                  
+    [[7,7,0],[0,7,7],[0,0,0]]                   
 ];
 
 // ── Audio ────────────────────────────────────────────────────────────────────
 let audioCtx, musicGainNode, sfxGainNode;
 let bgMusic = null, bgMusicSource = null;
 let musicEnabled = true;
+let isMusicLoading = false;
 
 function initAudio() {
-    if (audioCtx) { if (audioCtx.state === 'suspended') audioCtx.resume(); return; }
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    // BUG FIX: separate gain nodes for music vs SFX.
-    musicGainNode = audioCtx.createGain();
-    musicGainNode.gain.value = +document.getElementById('music-vol').value / 100;
-    musicGainNode.connect(audioCtx.destination);
-    sfxGainNode = audioCtx.createGain();
-    sfxGainNode.gain.value = +document.getElementById('sfx-vol').value / 100;
-    sfxGainNode.connect(audioCtx.destination);
-    loadMusic();
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        
+        musicGainNode = audioCtx.createGain();
+        musicGainNode.gain.value = +document.getElementById('music-vol').value / 100;
+        musicGainNode.connect(audioCtx.destination);
+
+        sfxGainNode = audioCtx.createGain();
+        sfxGainNode.gain.value = +document.getElementById('sfx-vol').value / 100;
+        sfxGainNode.connect(audioCtx.destination);
+    }
+    
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+
+    if (!bgMusic && !isMusicLoading) {
+        loadMusic();
+    }
 }
 
 async function loadMusic() {
-    if (!MUSIC_URL || !audioCtx) return;
+    if (isMusicLoading) return;
+    isMusicLoading = true;
     try {
-        const buf = await fetch(MUSIC_URL).then(r => r.arrayBuffer());
-        bgMusic = await audioCtx.decodeAudioData(buf);
+        // We use fetch with 'cors' mode explicitly for GitHub Pages security
+        const response = await fetch(MUSIC_URL, { mode: 'cors' });
+        const arrayBuffer = await response.arrayBuffer();
+        bgMusic = await audioCtx.decodeAudioData(arrayBuffer);
         if (gameState === 'playing' && musicEnabled) playBGM();
-    } catch(e) { console.warn('Music load failed:', e); }
+    } catch(e) { 
+        console.warn('Primary music fetch failed, attempting fallback...');
+        // Fallback for strict network environments: use HTML Audio element strategy
+        try {
+            const audioObj = new Audio(MUSIC_URL);
+            audioObj.crossOrigin = "anonymous";
+            audioObj.loop = true;
+            // Note: This won't use the Web Audio context volume nodes directly, but it's a safe backup
+            bgMusic = audioObj; 
+        } catch(e2) {
+            console.error('Music load failed entirely:', e2);
+        }
+    } finally {
+        isMusicLoading = false;
+    }
 }
 
 function playBGM() {
-    if (!bgMusic || bgMusicSource || !musicEnabled) return;
+    if (!musicEnabled || !audioCtx) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    if (bgMusic instanceof Audio) {
+        bgMusic.volume = musicGainNode.gain.value;
+        bgMusic.play().catch(e => console.error(e));
+        return;
+    }
+
+    if (!bgMusic || bgMusicSource) return;
+
     bgMusicSource = audioCtx.createBufferSource();
     bgMusicSource.buffer = bgMusic;
     bgMusicSource.loop = true;
@@ -369,8 +407,15 @@ function playBGM() {
 }
 
 function stopBGM() {
+    if (bgMusic instanceof Audio) {
+        bgMusic.pause();
+        return;
+    }
     if (!bgMusicSource) return;
-    try { bgMusicSource.stop(); } catch(_) {}
+    try { 
+        bgMusicSource.stop(); 
+        bgMusicSource.disconnect();
+    } catch(_) {}
     bgMusicSource = null;
 }
 
@@ -379,14 +424,20 @@ function toggleMusic() {
     const btn = document.getElementById('music-toggle-btn');
     btn.textContent = musicEnabled ? 'ON' : 'OFF';
     btn.classList.toggle('on', musicEnabled);
-    if (musicEnabled) { if (audioCtx && gameState === 'playing') playBGM(); }
-    else stopBGM();
+    if (musicEnabled) { 
+        if (gameState === 'playing') playBGM(); 
+    } else {
+        stopBGM();
+    }
 }
 
 document.getElementById('music-vol').addEventListener('input', e => {
+    const val = e.target.value / 100;
     document.getElementById('music-vol-display').textContent = e.target.value + '%';
-    if (musicGainNode) musicGainNode.gain.value = e.target.value / 100;
+    if (musicGainNode) musicGainNode.gain.value = val;
+    if (bgMusic instanceof Audio) bgMusic.volume = val;
 });
+
 document.getElementById('sfx-vol').addEventListener('input', e => {
     document.getElementById('sfx-vol-display').textContent = e.target.value + '%';
     if (sfxGainNode) sfxGainNode.gain.value = e.target.value / 100;
@@ -394,6 +445,8 @@ document.getElementById('sfx-vol').addEventListener('input', e => {
 
 function playSound(type) {
     if (!audioCtx || !sfxGainNode) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.connect(gain); gain.connect(sfxGainNode);
@@ -446,11 +499,9 @@ let requestID = null;
 let player = { pos:{x:0,y:0}, matrix:null, pieceId:0 };
 let bag = [], nextPieceId = 0, holdPieceId = 0, canHold = true;
 
-// Line-clear flash
 let flashRows  = [];
 let flashTimer = 0;
 
-// High score
 let highScore = parseInt(localStorage.getItem('torta_highscore') || '0', 10);
 document.getElementById('highscore-display').textContent = fmt(highScore);
 document.getElementById('final-highscore').textContent   = fmt(highScore);
@@ -485,10 +536,8 @@ function setGameState(state) {
         cancelAnimationFrame(requestID);
         requestID = null;
 
-        if (audioCtx && audioCtx.state === 'suspended') {
+        if (audioCtx) {
             audioCtx.resume().then(() => { if (musicEnabled) playBGM(); });
-        } else {
-            if (musicEnabled) playBGM();
         }
 
         lastTime  = 0;
@@ -561,6 +610,7 @@ function getShapeMatrix(id) { return SHAPES[id].map(r => [...r]); }
 
 function collide(board, player) {
     const m = player.matrix, o = player.pos;
+    if (!m) return false;
     for (let y = 0; y < m.length; y++)
         for (let x = 0; x < m[y].length; x++)
             if (m[y][x] !== 0 && (board[y+o.y] && board[y+o.y][x+o.x]) !== 0)
@@ -587,7 +637,7 @@ function playerDrop() {
     if (collide(board, player)) {
         player.pos.y--;
         merge(board, player);
-        if (!clearLines()) { // Only reset if lines ARE NOT clearing
+        if (!clearLines()) { 
             playerReset(); 
         }
     }
@@ -599,7 +649,7 @@ function playerHardDrop() {
     player.pos.y--;
     merge(board, player);
     playSound('move');
-    if (!clearLines()) { // Only reset if lines ARE NOT clearing
+    if (!clearLines()) {
         playerReset();
     }
     dropCounter = 0;
@@ -654,7 +704,7 @@ function clearLines() {
 
     flashRows  = fullRows;
     flashTimer = FLASH_DURATION;
-    player.matrix = null; // Hide the active piece during the flash
+    player.matrix = null; 
 
     const lc = fullRows.length;
     playSound('clear');
@@ -668,19 +718,16 @@ function clearLines() {
 }
 
 function commitClearedLines() {
-    // BUG FIX: Sort descending to remove the highest index rows first,
-    // so deleting a row doesn't shift the indices of the rows above it.
     [...flashRows].sort((a,b) => b-a).forEach(y => {
         board.splice(y, 1);
     });
 
-    // Add empty rows back to the top to replace the removed lines
     flashRows.forEach(() => {
         board.unshift(new Array(COLS).fill(0));
     });
 
     flashRows = [];
-    playerReset(); // Spawn the new piece ONLY after lines are physically removed
+    playerReset(); 
 }
 
 function updateStatsUI() {
@@ -724,12 +771,14 @@ function drawBlock(c, x, y, color, isGhost=false) {
 }
 
 function drawMatrix(c, matrix, offset, isGhost=false) {
+    if (!matrix) return;
     matrix.forEach((row,y) =>
         row.forEach((v,x) => { if (v) drawBlock(c, x+offset.x, y+offset.y, COLORS[v], isGhost); })
     );
 }
 
 function drawGhostPiece() {
+    if (!player.matrix) return;
     const ghost = { matrix:player.matrix, pos:{x:player.pos.x, y:player.pos.y} };
     while (!collide(board, ghost)) ghost.pos.y++;
     ghost.pos.y--;
@@ -757,7 +806,6 @@ function drawNextPiece() { drawCenteredMiniMatrix(nextCtx, nextCanvas, nextPiece
 
 function draw() {
     ctx.clearRect(0,0,canvas.width,canvas.height);
-    // Grid
     ctx.strokeStyle='rgba(255,255,255,0.05)'; ctx.lineWidth=1;
     for (let i=0;i<=COLS;i++) { ctx.beginPath(); ctx.moveTo(i*BLOCK_SIZE,0); ctx.lineTo(i*BLOCK_SIZE,canvas.height); ctx.stroke(); }
     for (let i=0;i<=ROWS;i++) { ctx.beginPath(); ctx.moveTo(0,i*BLOCK_SIZE); ctx.lineTo(canvas.width,i*BLOCK_SIZE); ctx.stroke(); }
@@ -769,7 +817,6 @@ function draw() {
         drawMatrix(ctx, player.matrix, player.pos);
     }
 
-    // Line-clear flash
     if (flashRows.length && flashTimer > 0) {
         const phase = Math.floor(flashTimer / 35) % 2;
         ctx.fillStyle = phase === 0 ? 'rgba(255,255,255,0.9)' : 'rgba(255,220,0,0.75)';
@@ -777,7 +824,6 @@ function draw() {
     }
 }
 
-// ── Game loop ─────────────────────────────────────────────────────────────────
 function update(time=0) {
     if (gameState !== 'playing') return;
 
@@ -801,7 +847,6 @@ function update(time=0) {
     requestID = requestAnimationFrame(update);
 }
 
-// ── Keyboard — DAS / ARR ─────────────────────────────────────────────────────
 function handleInput(type) {
     if (gameState !== 'playing' || !player.matrix) return; 
     ({ LEFT:()=>playerMove(-1), RIGHT:()=>playerMove(1), DOWN:()=>playerDrop(),
@@ -847,8 +892,6 @@ document.addEventListener('keydown', e => {
 
 document.addEventListener('keyup', e => { if (e.key === dasKey) clearDAS(); });
 
-// ── Button touch bindings — per-element intervals ────────────────────────────
-
 const touchMap = {
     'btn-left':'LEFT','btn-right':'RIGHT','btn-down':'DOWN',
     'btn-hard-drop':'HARD_DROP','btn-rot-cw':'ROT_CW',
@@ -885,7 +928,6 @@ for (const id in touchMap) {
     el.addEventListener('pointercancel', stop);
 }
 
-// ── Canvas swipe gestures ─────────────────────────────────────────────────────
 const SWIPE_THRESHOLD = 20;
 let touchStartX=0, touchStartY=0, touchMoved=false;
 
@@ -912,7 +954,6 @@ canvas.addEventListener('touchend', e => {
     else                        handleInput(dy>0?'DOWN':'HARD_DROP');
 }, { passive:false });
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
 setGameState('menu');
 draw();
 </script>
